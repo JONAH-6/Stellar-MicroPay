@@ -79,7 +79,7 @@ export default function Trade({ publicKey }: TradePageProps) {
     try {
       const transaction = await buildCancelOfferTransaction({
         fromPublicKey: publicKey,
-        offerId: offer.id,
+        offerId: String(offer.id),
         selling: offer.selling,
         buying: offer.buying,
       });
