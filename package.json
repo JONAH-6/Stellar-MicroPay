@@ -1,4 +1,7 @@
 {
+  "scripts": {
+    "load-test": "node scripts/load-test.js"
+  },
   "dependencies": {
     "clsx": "^2.1.1"
   },
@@ -11,7 +14,8 @@
     "@types/jest": "^29.0.0",
     "eslint": "^8.0.0",
     "@typescript-eslint/eslint-plugin": "^6.0.0",
-    "@typescript-eslint/parser": "^6.0.0"
+    "@typescript-eslint/parser": "^6.0.0",
+    "autocannon": "^8.0.0"
   },
   "keywords": [
     "stellar",
