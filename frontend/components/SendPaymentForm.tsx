@@ -754,7 +754,7 @@ export default function SendPaymentForm({
                     className="flex w-full flex-col items-start rounded-lg px-3 py-2 text-left hover:bg-white/5"
                   >
                     <span className="text-sm font-medium text-slate-200">{item.name}</span>
-                    <span className="text-xs text-slate-500">{shortenAddress(item.address, 8)}</span>
+                    <span className="text-xs text-slate-400">{shortenAddress(item.address, 8)}</span>
                   </button>
                 ))}
               </div>
@@ -934,22 +934,22 @@ function SendConfirmationModal({ isOpen, destination, amount, memo, estimatedFee
         <h3 className="text-xl font-bold text-white mb-4">Confirm Payment</h3>
         <div className="space-y-4">
           <div>
-            <p className="text-xs text-slate-500 uppercase font-bold">To</p>
+            <p className="text-xs text-slate-400 uppercase font-bold">To</p>
             <p className="text-sm font-mono text-slate-200 break-all">{destination}</p>
           </div>
           <div className="grid grid-cols-2 gap-4">
             <div>
-              <p className="text-xs text-slate-500 uppercase font-bold">Amount</p>
+              <p className="text-xs text-slate-400 uppercase font-bold">Amount</p>
               <p className="text-lg font-bold text-white">{amount} XLM</p>
             </div>
             <div>
-              <p className="text-xs text-slate-500 uppercase font-bold">Fee</p>
+              <p className="text-xs text-slate-400 uppercase font-bold">Fee</p>
               <p className="text-sm text-slate-300">{estimatedFee}</p>
             </div>
           </div>
           {memo && (
             <div>
-              <p className="text-xs text-slate-500 uppercase font-bold">Memo</p>
+              <p className="text-xs text-slate-400 uppercase font-bold">Memo</p>
               <p className="text-sm text-slate-200">{memo}</p>
             </div>
           )}
