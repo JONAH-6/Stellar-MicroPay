@@ -144,6 +144,27 @@ export default function SendPaymentForm({
   const detectorRef = useRef<BarcodeDetectorLike | null>(null);
   const frameRequestRef = useRef<number | null>(null);
   const isDetectingRef = useRef(false);
+  const destinationInputRef = useRef<HTMLInputElement | null>(null);
+
+  // Power-user shortcut: press "S" (when not already typing in a field and no
+  // modal is open) to jump focus to the destination input (#264).
+  useEffect(() => {
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.key.toLowerCase() !== "s" || e.metaKey || e.ctrlKey || e.altKey) return;
+      const target = e.target as HTMLElement | null;
+      const tag = target?.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || target?.isContentEditable) {
+        return;
+      }
+      if (typeof document !== "undefined" && document.querySelector('[aria-modal="true"]')) {
+        return; // don't steal focus from an open dialog
+      }
+      e.preventDefault();
+      destinationInputRef.current?.focus();
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, []);
 
   useEffect(() => {
     const checkSupport = async () => {
@@ -546,14 +567,9 @@ export default function SendPaymentForm({
         </div>
         <h2 className="mb-2 font-display text-2xl font-bold text-white">{successTitle}</h2>
         <p className="mb-6 text-slate-400">{successMessage || "Your payment has been confirmed on the Stellar network."}</p>
-        />
-      </>
-    );
-          </div>
-        </div>
 
         <div className="flex flex-col gap-3">
-          <a href={explorerUrl(txHash)} target="_blank" rel="noopener noreferrer" className="btn-primary flex items-center justify-center gap-2">
+          <a href={explorerUrl(txHash) ?? undefined} target="_blank" rel="noopener noreferrer" className="btn-primary flex items-center justify-center gap-2">
             View on Explorer <ExternalLinkIcon className="h-4 w-4" />
           </a>
 
@@ -662,6 +678,7 @@ export default function SendPaymentForm({
             </div>
             
             <input
+              ref={destinationInputRef}
               type="text"
               value={destination}
               onChange={(e) => setDestination(e.target.value)}
@@ -756,12 +773,7 @@ export default function SendPaymentForm({
         timeoutSeconds={60}
         onClose={closeStatusModal}
       />
-<<<<<<< HEAD
     </>
-=======
-    </div>
-  </>
->>>>>>> caccf0c (fix: Resolve frontend TypeScript compilation errors in CI)
   );
 }
 
