@@ -21,7 +21,7 @@ import {
   nativeToScVal,
   scValToNative,
   xdr,
-  SorobanRpc,
+  rpc,
   Federation,
 } from "@stellar/stellar-sdk";
 
@@ -206,19 +206,19 @@ export function getSorobanRpcUrl(): string {
 export const SOROBAN_RPC_URL = getSorobanRpcUrl();
 
 /** Pre-configured Soroban RPC server instance. */
-let _sorobanServer: SorobanRpc.Server | null = null;
-export function getSorobanServer(): SorobanRpc.Server {
+let _sorobanServer: rpc.Server | null = null;
+export function getSorobanServer(): rpc.Server {
   const currentUrl = getSorobanRpcUrl();
   if (!_sorobanServer || _sorobanServer.serverURL.toString() !== currentUrl) {
-    _sorobanServer = new SorobanRpc.Server(currentUrl);
+    _sorobanServer = new rpc.Server(currentUrl);
   }
   return _sorobanServer;
 }
 
 // For backwards compatibility
-export const sorobanServer = new Proxy({} as SorobanRpc.Server, {
+export const sorobanServer = new Proxy({} as rpc.Server, {
   get(target, prop) {
-    return getSorobanServer()[prop as keyof SorobanRpc.Server];
+    return getSorobanServer()[prop as keyof rpc.Server];
   },
 });
 
@@ -633,6 +633,44 @@ export async function buildPaymentTransaction({
 }): Promise<Transaction> {
   const sourceAccount = await server.loadAccount(fromPublicKey);
 
+  // For XLM, verify the destination account exists; if not, use create_account
+  // operation with a minimum 1 XLM deposit so the transaction doesn't fail.
+  if (asset === "XLM") {
+    let destinationExists = true;
+    try {
+      await server.loadAccount(toPublicKey);
+    } catch {
+      destinationExists = false;
+    }
+
+    if (!destinationExists) {
+      const amountNum = parseFloat(amount);
+      if (amountNum < 1) {
+        throw new Error(
+          "Destination account does not exist on the Stellar network. A minimum of 1 XLM is required to create a new account."
+        );
+      }
+      // Use create_account operation to fund and activate the new account
+      const builder = new TransactionBuilder(sourceAccount, {
+        fee: STELLAR_BASE_FEE_STROOPS_STRING,
+        networkPassphrase: NETWORK_PASSPHRASE,
+      })
+        .addOperation(
+          Operation.createAccount({
+            destination: toPublicKey,
+            startingBalance: amount,
+          })
+        )
+        .setTimeout(STELLAR_TRANSACTION_TIMEOUT_SECONDS);
+
+      if (memo) {
+        builder.addMemo(Memo.text(truncateMemoText(memo)));
+      }
+
+      return builder.build();
+    }
+  }
+
   // For USDC, verify the recipient has a trustline before building the tx
   if (asset === "USDC") {
     const recipient = await server.loadAccount(toPublicKey).catch(() => null);
@@ -828,6 +866,29 @@ export async function getPaymentHistory(
 
   const operations = await operationsBuilder.call();
 
+  // Batch-fetch transaction memos: collect unique hashes for payment ops,
+  // then resolve them all in parallel instead of one-by-one (N+1 fix).
+  const paymentOps = operations.records.filter((op) => op.type === "payment");
+  const uniqueHashes = Array.from(
+    new Set(
+      paymentOps.map(
+        (op) => (op as Horizon.HorizonApi.PaymentOperationResponse).transaction_hash
+      )
+    )
+  );
+
+  const memoMap = new Map<string, string | undefined>();
+  await Promise.all(
+    uniqueHashes.map(async (hash) => {
+      try {
+        const tx = await server.transactions().transaction(hash).call();
+        memoMap.set(hash, tx.memo && tx.memo_type === "text" ? tx.memo : undefined);
+      } catch {
+        memoMap.set(hash, undefined);
+      }
+    })
+  );
+
   const records: PaymentRecord[] = [];
 
   for (const op of operations.records) {
@@ -836,16 +897,8 @@ export async function getPaymentHistory(
     if (op.type === "payment") {
       const payment = op as Horizon.HorizonApi.PaymentOperationResponse;
 
-      // Fetch transaction for memo
-      let memo: string | undefined;
-      try {
-        const tx = await server.transactions().transaction(payment.transaction_hash).call();
-        if (tx.memo && tx.memo_type === "text") {
-          memo = tx.memo;
-        }
-      } catch {
-        // memo is optional, don't fail
-      }
+      // Look up memo from the pre-fetched batch
+      const memo = memoMap.get(payment.transaction_hash);
 
       const assetCode =
         payment.asset_type === "native" ? "XLM" : payment.asset_code || "???";
@@ -1014,6 +1067,26 @@ export function isValidStellarAddress(address: string): boolean {
 }
 
 /**
+ * Validate whether a string is a well-formed Stellar Federation address.
+ *
+ * Federation addresses use the SEP-0002 `name*domain` format, for example
+ * `alice*stellarmicropay.io`.
+ */
+export function isValidFederationAddress(address: string): boolean {
+  const value = address.trim();
+  const parts = value.split("*");
+  if (parts.length !== 2) return false;
+
+  const [name, domain] = parts;
+  if (!/^[A-Za-z0-9._-]{1,32}$/.test(name)) return false;
+  if (domain.length > 253) return false;
+
+  return /^([A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}$/.test(
+    domain
+  );
+}
+
+/**
  * Generate a Stellar Expert explorer URL for a given transaction hash.
  *
  * @param hash - The transaction hash to link to.
@@ -1027,7 +1100,12 @@ export function isValidStellarAddress(address: string): boolean {
  * // → "https://stellar.expert/explorer/testnet/tx/abc123..."
  * ```
 */
-export function explorerUrl(hash: string): string {
+export function explorerUrl(hash: string): string | null {
+  // A Stellar transaction hash is 64 hex chars. Reject anything else so we
+  // never produce a broken / misleading explorer link (#274).
+  if (!/^[a-f0-9]{64}$/i.test(hash)) {
+    return null;
+  }
   const net = NETWORK === "mainnet" ? "public" : "testnet";
   return `https://stellar.expert/explorer/${net}/tx/${hash}`;
 }
@@ -1086,7 +1164,7 @@ export async function buildSorobanTipTransaction({
   // Preflight: Simulate the transaction to get resources and fees
   const simulated = await sorobanServer.simulateTransaction(tx);
 
-  if (SorobanRpc.Api.isSimulationError(simulated)) {
+  if (rpc.Api.isSimulationError(simulated)) {
     throw new Error(`Simulation failed: ${simulated.error}`);
   }
 
@@ -1121,7 +1199,7 @@ export async function getContractTipTotal(recipient: string): Promise<string> {
 
     const sim = await sorobanServer.simulateTransaction(tx);
 
-    if (SorobanRpc.Api.isSimulationSuccess(sim) && sim.result) {
+    if (rpc.Api.isSimulationSuccess(sim) && sim.result) {
       const value = scValToNative(sim.result.retval);
       return value.toString();
     }
@@ -1179,7 +1257,7 @@ export async function buildReceiptMintTransaction({
 
   const simulated = await sorobanServer.simulateTransaction(tx);
 
-  if (SorobanRpc.Api.isSimulationError(simulated)) {
+  if (rpc.Api.isSimulationError(simulated)) {
     throw new Error(`Receipt simulation failed: ${simulated.error}`);
   }
 
@@ -1204,7 +1282,7 @@ export async function getReceiptCount(payer: string): Promise<number> {
       .build();
 
     const sim = await sorobanServer.simulateTransaction(tx);
-    if (SorobanRpc.Api.isSimulationSuccess(sim) && sim.result) {
+    if (rpc.Api.isSimulationSuccess(sim) && sim.result) {
       const value = scValToNative(sim.result.retval);
       return Number(value);
     }
@@ -1334,19 +1412,58 @@ export function streamPayments(
 export async function resolveFederationAddress(
   federationAddress: string
 ): Promise<string> {
-  // Basic validation: federation addresses should contain exactly one @
-  if (!federationAddress.includes("*")) {
+  const normalizedAddress = federationAddress.trim().toLowerCase();
+  if (!isValidFederationAddress(normalizedAddress)) {
     throw new Error(
       'Invalid federation address format. Expected "user*domain.com"'
     );
   }
 
-  try {
-    const record = await Federation.Server.resolve(federationAddress);
+  const resolveViaSdk = async () => {
+    const record = await Federation.Server.resolve(normalizedAddress);
     return record.account_id;
+  };
+
+  if (typeof fetch !== "function") {
+    return resolveViaSdk();
+  }
+
+  const apiBase = process.env.NEXT_PUBLIC_API_URL?.replace(/\/$/, "") || "";
+  const federationUrl = `${apiBase}/federation?q=${encodeURIComponent(
+    normalizedAddress
+  )}&type=name`;
+
+  try {
+    const response = await fetch(federationUrl);
+    const payload = await response.json().catch(() => null);
+
+    if (!response.ok) {
+      throw new Error(
+        payload?.error || `Federation lookup failed with status ${response.status}`
+      );
+    }
+
+    if (!isValidStellarAddress(payload?.account_id || "")) {
+      throw new Error("Federation lookup did not return a valid account ID");
+    }
+
+    return payload.account_id;
   } catch (error) {
+    if (error instanceof TypeError) {
+      try {
+        return await resolveViaSdk();
+      } catch (sdkError) {
+        throw new Error(
+          `Federation lookup failed for "${normalizedAddress}": ${
+            sdkError instanceof Error ? sdkError.message : "Unknown error"
+          }`
+        );
+      }
+    }
+
     throw new Error(
-      `Federation lookup failed for "${federationAddress}": ${error instanceof Error ? error.message : "Unknown error"
+      `Federation lookup failed for "${normalizedAddress}": ${
+        error instanceof Error ? error.message : "Unknown error"
       }`
     );
   }
@@ -1441,14 +1558,14 @@ export interface TradeAggregation {
   low: string;
   open: string;
   close: string;
-  price: string; // Map to close for display
+  price: string;
 }
 
 /**
- * Represents an open offer on the DEX.
+ * Represents an open DEX offer for an account.
  */
 export interface OpenOffer {
-  id: string;
+  id: string | number;
   seller: string;
   selling: Asset;
   buying: Asset;
@@ -1686,3 +1803,51 @@ export async function fetchNetworkStats(): Promise<NetworkStats> {
   };
 }
 
+
+// ── Stellar Name Service ──────────────────────────────────────────────────
+
+const snsCache = new Map<string, { address: string; expiresAt: number }>()
+const SNS_CACHE_TTL_MS = 10 * 60 * 1000 // 10 minutes
+
+/**
+ * Resolves a Stellar name (e.g. alice.xlm) to a Stellar address.
+ * Uses Stellar Federation protocol under the hood.
+ * Caches results for 10 minutes.
+ */
+export async function resolveStellarName(name: string): Promise<string> {
+  const trimmed = name.trim()
+  
+  // Return as-is if already a valid Stellar address
+  if (isValidStellarAddress(trimmed)) return trimmed
+  
+  // Check cache
+  const cached = snsCache.get(trimmed)
+  if (cached && cached.expiresAt > Date.now()) return cached.address
+
+  // Must contain a * for federation (e.g. alice*stellar.org) or end in .xlm
+  let federationAddress = trimmed
+  if (trimmed.endsWith('.xlm')) {
+    // Convert alice.xlm -> alice*stellarnames.org
+    const parts = trimmed.split('.')
+    federationAddress = `${parts[0]}*stellarnames.org`
+  } else if (!trimmed.includes('*')) {
+    throw new Error(`Invalid Stellar name: ${trimmed}`)
+  }
+
+  try {
+    const record = await Federation.Server.resolve(federationAddress)
+    if (!record.account_id) throw new Error('Name resolved but no address found')
+    snsCache.set(trimmed, { address: record.account_id, expiresAt: Date.now() + SNS_CACHE_TTL_MS })
+    return record.account_id
+  } catch (err: any) {
+    throw new Error(`Could not resolve "${trimmed}": ${err.message ?? 'Unknown error'}`)
+  }
+}
+
+/**
+ * Returns true if the input looks like a Stellar name (not a raw address)
+ */
+export function isStellarName(value: string): boolean {
+  const v = value.trim()
+  return v.endsWith('.xlm') || v.includes('*')
+}
