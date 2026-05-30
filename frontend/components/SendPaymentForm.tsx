@@ -17,7 +17,9 @@ import {
   buildSorobanTipTransaction,
   explorerUrl,
   fetchNetworkFeeStats,
+  isValidFederationAddress,
   isValidStellarAddress,
+  resolveFederationAddress,
   server,
   STELLAR_BASE_FEE_XLM,
   STELLAR_MEMO_TEXT_MAX_BYTES,
@@ -34,9 +36,6 @@ import {
   ExternalLinkIcon,
   StarIcon,
   QrCodeIcon,
-  PencilIcon,
-  TrashIcon,
-  InfoIcon,
   ReceiptIcon,
 } from "@/components/icons";
 import clsx from "clsx";
@@ -129,8 +128,9 @@ export default function SendPaymentForm({
   const [destination, setDestination] = useState("");
   const [amount, setAmount] = useState("");
   const [memo, setMemo] = useState("");
-  const [isResolvingUsername, setIsResolvingUsername] = useState(false);
-  const [usernameResolutionError, setUsernameResolutionError] = useState<string | null>(null);
+  const [isResolvingDestination, setIsResolvingDestination] = useState(false);
+  const [destinationResolutionError, setDestinationResolutionError] = useState<string | null>(null);
+  const [resolvedPaymentDestination, setResolvedPaymentDestination] = useState<string | null>(null);
   const [customAsset, setCustomAsset] = useState<CustomAsset>({ code: "", issuer: "" });
   const [showCustomAssetForm, setShowCustomAssetForm] = useState(false);
   const [selectedMemoTemplate, setSelectedMemoTemplate] = useState<string | null>(null);
@@ -235,6 +235,8 @@ export default function SendPaymentForm({
           const result = barcodes[0].rawValue;
           if (isValidStellarAddress(result)) {
             setDestination(result);
+            setDestinationResolutionError(null);
+            setResolvedPaymentDestination(null);
             closeScanner();
             return;
           }
@@ -359,6 +361,8 @@ export default function SendPaymentForm({
     if (prefill.destination) setDestination(prefill.destination);
     if (prefill.amount) setAmount(prefill.amount);
     if (prefill.memo) setMemo(truncateMemoText(prefill.memo));
+    setDestinationResolutionError(null);
+    setResolvedPaymentDestination(null);
   }, [prefill]);
 
   // Pre-validate destination account existence on the Stellar network (#294)
@@ -400,9 +404,14 @@ export default function SendPaymentForm({
   const amountNum = parseFloat(amount);
   const hasAmount = Number.isFinite(amountNum) && amountNum > 0;
   const estimatedTotalDeducted = hasAmount ? amountNum + networkFeeXlm : null;
-  const isValidDest = destination.length > 0 && isValidStellarAddress(destination);
-  
-  const isUsernameDestination = /^@?[a-zA-Z0-9]{3,20}$/.test(destination) && !isValidStellarAddress(destination);
+  const trimmedDestination = destination.trim();
+  const isValidDest = trimmedDestination.length > 0 && isValidStellarAddress(trimmedDestination);
+  const isFederationDestination =
+    trimmedDestination.length > 0 && isValidFederationAddress(trimmedDestination);
+  const isUsernameDestination =
+    /^@?[a-zA-Z0-9]{3,20}$/.test(trimmedDestination) &&
+    !isValidDest &&
+    !isFederationDestination;
   
   const MIN_STROOP = 0.0000001;
   const isValidAmt =
@@ -411,37 +420,66 @@ export default function SendPaymentForm({
     amountNum <= maxSend &&
     !/[eE]/.test(amount);
   
-  const canSubmit = (isValidDest || (isUsernameDestination && !isResolvingUsername && !usernameResolutionError)) && 
-    isValidAmt && status === "idle" && destination !== publicKey;
+  const canSubmit =
+    (isValidDest || isFederationDestination || isUsernameDestination) &&
+    !isResolvingDestination &&
+    !destinationResolutionError &&
+    isValidAmt &&
+    status === "idle" &&
+    trimmedDestination !== publicKey;
 
-  const resolveUsername = async (username: string) => {
+  const resolveUsername = async (username: string): Promise<string> => {
     const cleanUsername = username.replace(/^@/, "").toLowerCase();
     if (!/^[a-zA-Z0-9]{3,20}$/.test(cleanUsername)) {
-      setUsernameResolutionError("Invalid username format");
-      return;
+      throw new Error("Invalid username format");
     }
-    setIsResolvingUsername(true);
-    setUsernameResolutionError(null);
+
+    const apiBase = process.env.NEXT_PUBLIC_API_URL?.replace(/\/$/, "") || "";
+    const response = await fetch(`${apiBase}/api/accounts/resolve/${encodeURIComponent(cleanUsername)}`);
+    const payload = await response.json().catch(() => null);
+
+    if (!response.ok) {
+      throw new Error(payload?.error || "Username not found");
+    }
+
+    if (payload?.success && isValidStellarAddress(payload?.data?.publicKey || "")) {
+      return payload.data.publicKey;
+    }
+
+    throw new Error("Username resolution did not return a valid public key");
+  };
+
+  const resolveDestinationForPayment = async (): Promise<string> => {
+    setDestinationResolutionError(null);
+
+    if (isValidDest) {
+      return trimmedDestination;
+    }
+
+    setIsResolvingDestination(true);
     try {
-      const apiBase = process.env.NEXT_PUBLIC_API_URL?.replace(/\/$/, "") || "";
-      const response = await fetch(`${apiBase}/api/accounts/resolve/${encodeURIComponent(cleanUsername)}`);
-      if (!response.ok) throw new Error("Username not found");
-      const payload = await response.json();
-      if (payload?.success && payload?.data?.publicKey) {
-        setDestination(payload.data.publicKey);
-        setUsernameResolutionError(null);
-      } else {
-        throw new Error("Failed to resolve username");
+      if (isFederationDestination) {
+        return await resolveFederationAddress(trimmedDestination);
       }
+
+      if (isUsernameDestination) {
+        return await resolveUsername(trimmedDestination);
+      }
+
+      throw new Error("Enter a valid Stellar public key, federation address, or username.");
     } catch (err) {
-      setUsernameResolutionError(err instanceof Error ? err.message : "Failed to resolve username");
+      const message = err instanceof Error ? err.message : "Failed to resolve destination";
+      setDestinationResolutionError(message);
+      throw err;
     } finally {
-      setIsResolvingUsername(false);
+      setIsResolvingDestination(false);
     }
   };
 
   const handleSelectFavourite = (address: string) => {
     setDestination(address);
+    setDestinationResolutionError(null);
+    setResolvedPaymentDestination(null);
     setIsFavouritesDropdownOpen(false);
   };
 
@@ -450,6 +488,7 @@ export default function SendPaymentForm({
     setError(null);
     setTxHash(null);
     setFailedStep(null);
+    setResolvedPaymentDestination(null);
     setStepTimings(createInitialStepTimings());
   };
 
@@ -484,6 +523,7 @@ export default function SendPaymentForm({
       setDestination("");
       setAmount("");
       setMemo("");
+      setResolvedPaymentDestination(null);
     }
     setStatus("idle");
   };
@@ -495,7 +535,7 @@ export default function SendPaymentForm({
     try {
       const tx = await buildReceiptMintTransaction({
         fromPublicKey: publicKey,
-        toPublicKey: destination,
+        toPublicKey: resolvedPaymentDestination || trimmedDestination,
         amount: amountNum.toFixed(7),
         memo: memo.trim() || undefined,
       });
@@ -517,17 +557,24 @@ export default function SendPaymentForm({
     try {
       markStepStarted("building");
       setStatus("building");
+      const paymentDestination = await resolveDestinationForPayment();
+      if (paymentDestination === publicKey) {
+        throw new Error("Destination cannot be your own wallet.");
+      }
+      setResolvedPaymentDestination(paymentDestination);
+
       const tx = isTipOnChain
         ? await buildSorobanTipTransaction({
           fromPublicKey: publicKey,
-          toPublicKey: destination,
+          toPublicKey: paymentDestination,
           amount: amountNum.toFixed(7),
         })
         : await buildPaymentTransaction({
             fromPublicKey: publicKey,
-            toPublicKey: destination,
+            toPublicKey: paymentDestination,
             amount: amountNum.toFixed(7),
             memo: memo.trim() || undefined,
+            asset: selectedAsset === "USDC" ? "USDC" : "XLM",
           });
       markStepCompleted("building");
 
@@ -552,7 +599,7 @@ export default function SendPaymentForm({
       markStepCompleted("confirming");
 
       setStatus("success");
-      saveRecipient(destination);
+      saveRecipient(trimmedDestination);
       onSuccess?.(result.hash);
     } catch (err: any) {
       const message = err?.message || "An unexpected error occurred";
@@ -609,6 +656,16 @@ export default function SendPaymentForm({
         </div>
         <h2 className="mb-2 font-display text-2xl font-bold text-white">{successTitle}</h2>
         <p className="mb-6 text-slate-400">{successMessage || "Your payment has been confirmed on the Stellar network."}</p>
+
+        <div className="mb-8 rounded-xl border border-white/5 bg-white/5 p-4">
+          <p className="mb-1 text-[10px] font-bold uppercase tracking-widest text-slate-500">Transaction Hash</p>
+          <div className="flex items-center justify-center gap-2">
+            <code className="text-xs text-stellar-300">{truncatedHash}</code>
+            <button onClick={handleCopy} className="text-slate-500 hover:text-white transition-colors">
+              {copied ? <CheckIcon className="h-3.5 w-3.5 text-green-400" /> : <CopyIcon className="h-3.5 w-3.5" />}
+            </button>
+          </div>
+        </div>
 
         <div className="flex flex-col gap-3">
           <a href={explorerUrl(txHash) ?? undefined} target="_blank" rel="noopener noreferrer" className="btn-primary flex items-center justify-center gap-2">
@@ -730,11 +787,27 @@ export default function SendPaymentForm({
               ref={destinationInputRef}
               type="text"
               value={destination}
-              onChange={(e) => setDestination(e.target.value)}
-              placeholder="G... or @username"
-              className={clsx("input-field font-mono text-sm", destination && !isValidDest && !isUsernameDestination && "border-red-500/50")}
+              onChange={(e) => {
+                setDestination(e.target.value);
+                setDestinationResolutionError(null);
+                setResolvedPaymentDestination(null);
+                setDestAccountWarning(null);
+              }}
+              placeholder="G..., alice*domain.com, or @username"
+              className={clsx(
+                "input-field font-mono text-sm",
+                destination &&
+                  !isValidDest &&
+                  !isFederationDestination &&
+                  !isUsernameDestination &&
+                  "border-red-500/50"
+              )}
               disabled={status !== "idle" || destinationReadOnly}
             />
+
+            {destinationResolutionError && (
+              <p className="mt-2 text-xs text-red-400">{destinationResolutionError}</p>
+            )}
 
             {/* Destination account existence warning (#294) */}
             {isCheckingDest && isValidDest && (
@@ -813,6 +886,7 @@ export default function SendPaymentForm({
         isOpen={isConfirmOpen}
         destination={destination}
         amount={amountNum}
+        asset={selectedAsset}
         memo={memo}
         estimatedFee={ESTIMATED_NETWORK_FEE}
         isTipOnChain={isTipOnChain}
@@ -834,91 +908,11 @@ export default function SendPaymentForm({
   );
 }
 
-// Icons
-function SendIcon({ className }: { className?: string }) {
-  return (
-    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor">
-      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" />
-    </svg>
-  );
-}
-
-function CheckIcon({ className }: { className?: string }) {
-  return (
-    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor">
-      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-    </svg>
-  );
-}
-
-function CopyIcon({ className }: { className?: string }) {
-  return (
-    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor">
-      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
-    </svg>
-  );
-}
-
-function ExternalLinkIcon({ className }: { className?: string }) {
-  return (
-    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor">
-      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
-    </svg>
-  );
-}
-
-function StarIcon({ className, filled }: { className?: string; filled?: boolean }) {
-  return (
-    <svg className={className} fill={filled ? "currentColor" : "none"} viewBox="0 0 24 24" stroke="currentColor">
-      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11.049 2.927c.3-.921 1.603-.921 1.902 0l1.519 4.674a1 1 0 00.95.69h4.915c.969 0 1.371 1.24.588 1.81l-3.976 2.888a1 1 0 00-.363 1.118l1.518 4.674c.3.922-.755 1.688-1.538 1.118l-3.976-2.888a1 1 0 00-1.176 0l-3.976 2.888c-.783.57-1.838-.197-1.538-1.118l1.518-4.674a1 1 0 00-.363-1.118l-3.976-2.888c-.784-.57-.382-1.81.588-1.81h4.914a1 1 0 00.951-.69l1.519-4.674z" />
-    </svg>
-  );
-}
-
-function QrCodeIcon({ className }: { className?: string }) {
-  return (
-    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor">
-      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v1m6 11h2m-6 0h-2v4m0-11v3m0 0h.01M12 12h4.01M16 20h4M4 12h4m12 0h.01M5 8h2a1 1 0 001-1V5a1 1 0 00-1-1H5a1 1 0 00-1 1v2a1 1 0 001 1zm12 0h2a1 1 0 001-1V5a1 1 0 00-1-1h-2a1 1 0 00-1 1v2a1 1 0 001 1zM5 20h2a1 1 0 001-1v-2a1 1 0 00-1-1H5a1 1 0 00-1 1v2a1 1 0 001 1z" />
-    </svg>
-  );
-}
-
-function PencilIcon({ className }: { className?: string }) {
-  return (
-    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor">
-      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
-    </svg>
-  );
-}
-
-function TrashIcon({ className }: { className?: string }) {
-  return (
-    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor">
-      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-    </svg>
-  );
-}
-
-function InfoIcon({ className }: { className?: string }) {
-  return (
-    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor">
-      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-    </svg>
-  );
-}
-
-function ReceiptIcon({ className }: { className?: string }) {
-  return (
-    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-      <path strokeLinecap="round" strokeLinejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-    </svg>
-  );
-}
-
 interface SendConfirmationModalProps {
   isOpen: boolean;
   destination: string;
   amount: number;
+  asset: AssetType;
   memo: string;
   estimatedFee: string;
   isTipOnChain: boolean;
@@ -926,7 +920,7 @@ interface SendConfirmationModalProps {
   onConfirm: () => void;
 }
 
-function SendConfirmationModal({ isOpen, destination, amount, memo, estimatedFee, onCancel, onConfirm }: SendConfirmationModalProps) {
+function SendConfirmationModal({ isOpen, destination, amount, asset, memo, estimatedFee, onCancel, onConfirm }: SendConfirmationModalProps) {
   if (!isOpen) return null;
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
@@ -939,8 +933,8 @@ function SendConfirmationModal({ isOpen, destination, amount, memo, estimatedFee
           </div>
           <div className="grid grid-cols-2 gap-4">
             <div>
-              <p className="text-xs text-slate-400 uppercase font-bold">Amount</p>
-              <p className="text-lg font-bold text-white">{amount} XLM</p>
+              <p className="text-xs text-slate-500 uppercase font-bold">Amount</p>
+              <p className="text-lg font-bold text-white">{amount} {asset}</p>
             </div>
             <div>
               <p className="text-xs text-slate-400 uppercase font-bold">Fee</p>

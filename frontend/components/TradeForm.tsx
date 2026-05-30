@@ -91,12 +91,15 @@ export default function TradeForm({ publicKey, onTradeComplete, onError, onSucce
 
       // Sign with Freighter
       const { signTransaction } = await import("@stellar/freighter-api");
-      const signedXDR = await signTransaction(transaction.toXDR(), {
+      const signed = await signTransaction(transaction.toXDR(), {
         networkPassphrase: NETWORK_PASSPHRASE,
       });
+      if (signed.error) {
+        throw new Error(signed.error.message || "Transaction signing failed");
+      }
 
       // Submit transaction
-      const result = await submitTransaction(signedXDR);
+      const result = await submitTransaction(signed.signedTxXdr);
       
       onSuccess(
         orderType === "market" 

@@ -43,6 +43,10 @@ function cacheSet(key, value) {
   accountCache.set(key, { value, expiresAt: Date.now() + ACCOUNT_CACHE_TTL_MS });
 }
 
+function clearAccountCache() {
+  accountCache.clear();
+}
+
 // ─── Account ──────────────────────────────────────────────────────────────────
 
 /**
@@ -184,34 +188,10 @@ function validatePublicKey(publicKey) {
   }
 }
 
-/**
- * Stream incoming payments for an account from Horizon (#279). Invokes
- * `onPayment` for each new payment credited *to* the account. Returns the
- * stream's close function.
- */
-function streamIncomingPayments(publicKey, onPayment) {
-  return server
-    .payments()
-    .forAccount(publicKey)
-    .cursor("now")
-    .stream({
-      onmessage: (payment) => {
-        if (payment.type === "payment" && payment.to === publicKey) {
-          try {
-            onPayment(payment);
-          } catch (err) {
-            logger.error({ err }, "payment stream handler failed");
-          }
-        }
-      },
-      onerror: (err) => logger.error({ err }, "Horizon payment stream error"),
-    });
-}
-
 module.exports = {
   getAccount,
   getXLMBalance,
   getPayments,
   validatePublicKey,
-  streamIncomingPayments,
+  clearAccountCache,
 };
