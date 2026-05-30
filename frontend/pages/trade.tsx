@@ -250,7 +250,7 @@ export default function Trade() {
                   </div>
                 </div>
               ) : (
-                <div className="text-center py-8 text-slate-500">
+                <div className="text-center py-8 text-slate-400">
                   Loading orderbook...
                 </div>
               )}
@@ -308,7 +308,7 @@ export default function Trade() {
               </table>
             </div>
           ) : (
-            <div className="text-center py-8 text-slate-500">
+            <div className="text-center py-8 text-slate-400">
               No open orders
             </div>
           )}
@@ -348,7 +348,7 @@ export default function Trade() {
               </table>
             </div>
           ) : (
-            <div className="text-center py-8 text-slate-500">
+            <div className="text-center py-8 text-slate-400">
               No trades in the last 24 hours
             </div>
           )}
