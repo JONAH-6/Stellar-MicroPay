@@ -12,6 +12,7 @@ import {
   submitTransaction,
   NETWORK_PASSPHRASE,
 } from "@/lib/stellar";
+import { SwapIcon } from "@/components/icons";
 
 interface TradeFormProps {
   publicKey: string;
@@ -90,12 +91,15 @@ export default function TradeForm({ publicKey, onTradeComplete, onError, onSucce
 
       // Sign with Freighter
       const { signTransaction } = await import("@stellar/freighter-api");
-      const signedXDR = await signTransaction(transaction.toXDR(), {
+      const signed = await signTransaction(transaction.toXDR(), {
         networkPassphrase: NETWORK_PASSPHRASE,
       });
+      if (signed.error) {
+        throw new Error(signed.error.message || "Transaction signing failed");
+      }
 
       // Submit transaction
-      const result = await submitTransaction(signedXDR);
+      const result = await submitTransaction(signed.signedTxXdr);
       
       onSuccess(
         orderType === "market" 
@@ -186,9 +190,7 @@ export default function TradeForm({ publicKey, onTradeComplete, onError, onSucce
               onClick={swapAssets}
               className="p-2 rounded-lg bg-stellar-500/20 hover:bg-stellar-500/30 transition-colors"
             >
-              <svg className="w-5 h-5 text-stellar-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16V4m0 0L3 8m4-4l4 4m6 0v12m0 0l4-4m-4 4l-4-4" />
-              </svg>
+              <SwapIcon className="w-5 h-5 text-stellar-400" />
             </button>
           </div>
 
@@ -216,7 +218,7 @@ export default function TradeForm({ publicKey, onTradeComplete, onError, onSucce
                   className="flex-1 px-3 py-2 bg-cosmos-800 border border-stellar-500/20 rounded-lg text-white placeholder-slate-500 focus:outline-none focus:border-stellar-400"
                 />
               ) : (
-                <div className="flex-1 px-3 py-2 bg-cosmos-800 border border-stellar-500/20 rounded-lg text-slate-500">
+                <div className="flex-1 px-3 py-2 bg-cosmos-800 border border-stellar-500/20 rounded-lg text-slate-400">
                   Market Price
                 </div>
               )}
