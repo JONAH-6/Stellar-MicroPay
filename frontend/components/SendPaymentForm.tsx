@@ -41,6 +41,7 @@ import {
 } from "@/components/icons";
 import clsx from "clsx";
 import { useEffect, useRef, useState } from "react";
+import { useToastContext } from "@/lib/ToastContext";
 
 interface SendPaymentFormProps {
   publicKey: string;
@@ -57,6 +58,7 @@ interface SendPaymentFormProps {
   destinationReadOnly?: boolean;
   hideAmountField?: boolean;
   hideMemoField?: boolean;
+  accountBalances?: Array<{ code: string; issuer: string; balance: string }>;
   prefill?: {
     destination: string;
     amount: string;
@@ -123,7 +125,9 @@ export default function SendPaymentForm({
   destinationReadOnly = false,
   hideAmountField = false,
   hideMemoField = false,
+  accountBalances = [],
 }: SendPaymentFormProps) {
+  const { addToast } = useToastContext();
   const [selectedAsset, setSelectedAsset] = useState<AssetType>("XLM");
   const [networkFeeXlm, setNetworkFeeXlm] = useState(STELLAR_BASE_FEE_XLM);
   const [destination, setDestination] = useState("");
@@ -396,11 +400,17 @@ export default function SendPaymentForm({
 
   const xlmBal = parseFloat(xlmBalance);
   const usdcBal = usdcBalance ? parseFloat(usdcBalance) : 0;
-  const balance = selectedAsset === "XLM" ? xlmBal : usdcBal;
+  const customBal = accountBalances.find((b) => b.code === selectedAsset)
+    ? parseFloat(accountBalances.find((b) => b.code === selectedAsset)!.balance)
+    : 0;
+  const balance =
+    selectedAsset === "XLM" ? xlmBal : selectedAsset === "USDC" ? usdcBal : customBal;
   const maxSend =
     selectedAsset === "XLM"
       ? Math.max(0, xlmBal - STELLAR_MINIMUM_ACCOUNT_BALANCE_XLM)
-      : usdcBal;
+      : selectedAsset === "USDC"
+      ? usdcBal
+      : customBal;
 
   const amountNum = parseFloat(amount);
   const hasAmount = Number.isFinite(amountNum) && amountNum > 0;
@@ -568,6 +578,16 @@ export default function SendPaymentForm({
       }
       setResolvedPaymentDestination(paymentDestination);
 
+      const customAssetEntry = accountBalances.find((b) => b.code === selectedAsset);
+      const assetParam: "XLM" | "USDC" | { code: string; issuer: string } =
+        selectedAsset === "XLM"
+          ? "XLM"
+          : selectedAsset === "USDC"
+          ? "USDC"
+          : customAssetEntry
+          ? { code: customAssetEntry.code, issuer: customAssetEntry.issuer }
+          : "XLM";
+
       const tx = isTipOnChain
         ? await buildSorobanTipTransaction({
           fromPublicKey: publicKey,
@@ -579,7 +599,7 @@ export default function SendPaymentForm({
             toPublicKey: paymentDestination,
             amount: amountNum.toFixed(7),
             memo: memo.trim() || undefined,
-            asset: selectedAsset === "USDC" ? "USDC" : "XLM",
+            asset: assetParam,
           });
       markStepCompleted("building");
 
@@ -605,12 +625,14 @@ export default function SendPaymentForm({
 
       setStatus("success");
       saveRecipient(trimmedDestination);
+      addToast(`Payment sent! Tx: ${result.hash.slice(0, 8)}…`, "success");
       onSuccess?.(result.hash);
     } catch (err: any) {
       const message = err?.message || "An unexpected error occurred";
       setError(message);
       markStepFailed(activeStep, message);
       setStatus("error");
+      addToast(message, "error", () => { setStatus("idle"); void executeSend(); });
     }
   };
 
@@ -724,7 +746,7 @@ export default function SendPaymentForm({
 
       <div className="space-y-5">
         {!hideAssetSelector && (
-          <div className="flex gap-2">
+          <div className="flex flex-wrap gap-2">
             {assetOptions.map((a) => (
               <button
                 key={a}
@@ -740,6 +762,21 @@ export default function SendPaymentForm({
                 )}
               >
                 {a}
+              </button>
+            ))}
+            {accountBalances.map((b) => (
+              <button
+                key={b.code}
+                type="button"
+                onClick={() => { setSelectedAsset(b.code); setAmount(""); }}
+                className={clsx(
+                  "px-4 py-1.5 rounded-full text-sm font-medium border transition-all",
+                  selectedAsset === b.code
+                    ? "bg-stellar-500/15 text-stellar-300 border-stellar-500/30"
+                    : "text-slate-400 border-white/10 hover:border-white/20"
+                )}
+              >
+                {b.code}
               </button>
             ))}
           </div>
