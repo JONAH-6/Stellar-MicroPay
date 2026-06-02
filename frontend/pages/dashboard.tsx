@@ -29,6 +29,7 @@ const BatchPaymentForm = dynamic(() => import("../components/BatchPaymentForm"),
 const QRCodeModal = dynamic(() => import("../components/QRCodeModal"), { ssr: false });
 const CreatorTipsDashboard = dynamic(() => import("../components/CreatorTipsDashboard"), { ssr: false });
 const AIPaymentAssistant = dynamic(() => import("../components/AIPaymentAssistant"), { ssr: false });
+const RecurringPayments = dynamic(() => import("../components/RecurringPayments"), { ssr: false });
 
 import {
   ResponsiveContainer,
@@ -193,6 +194,18 @@ export default function Dashboard({ stellarURI }: DashboardProps) {
     amount: string;
     memo?: string;
   } | null>(null);
+
+  // Recurring payments prefill — set when user clicks "Pay Now" on a due schedule
+  const [recurringPrefill, setRecurringPrefill] = useState<{
+    destination: string;
+    amount: string;
+    memo: string;
+  } | null>(null);
+
+  const handleRecurringPayNow = (data: { destination: string; amount: string; memo: string }) => {
+    setRecurringPrefill(data);
+    setActivePaymentTab("single");
+  };
 
   // Creator username for tips dashboard
   const [creatorUsername, setCreatorUsername] = useState<string | null>(null);
@@ -1247,7 +1260,13 @@ export default function Dashboard({ stellarURI }: DashboardProps) {
               usdcBalance={usdcBalance}
               accountBalances={otherBalances}
               onSuccess={handlePaymentSuccess}
-              prefill={stellarURI && stellarURI.success ? uriToPrefillData(stellarURI.data!) : null}
+              prefill={
+                recurringPrefill
+                  ? recurringPrefill
+                  : stellarURI && stellarURI.success
+                  ? uriToPrefillData(stellarURI.data!)
+                  : null
+              }
             />
           ) : (
             <BatchPaymentForm
@@ -1259,6 +1278,7 @@ export default function Dashboard({ stellarURI }: DashboardProps) {
         </div>
 
         <div className="lg:col-span-1">
+          <RecurringPayments onPayNow={handleRecurringPayNow} />
           <PaymentRequestGenerator />
           <div className="mt-6">
             <MultiSigFlow
