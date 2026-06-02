@@ -6,6 +6,7 @@
  * Emmy123222/Stellar-MicroPay
  */
 
+import { withErrorBoundary } from "@/components/ErrorBoundary";
 import PaymentStatusModal, {
   type PaymentFlowStatus,
   type PaymentStepId,
@@ -107,7 +108,7 @@ function createInitialStepTimings(): Record<PaymentStepId, PaymentStepTiming> {
   };
 }
 
-export default function SendPaymentForm({
+function SendPaymentForm({
   publicKey,
   xlmBalance,
   usdcBalance,
@@ -972,3 +973,5 @@ function SendConfirmationModal({ isOpen, destination, amount, asset, memo, estim
     </div>
   );
 }
+
+export default withErrorBoundary(SendPaymentForm, "SendPaymentForm");
