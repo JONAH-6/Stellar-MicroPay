@@ -5,6 +5,7 @@
 
 import { useState, useEffect, useCallback, useRef } from "react";
 import { useRouter } from "next/router";
+import { withErrorBoundary } from "@/components/ErrorBoundary";
 import {
   getPaymentHistory,
   shortenAddress,
@@ -122,7 +123,7 @@ export function filterPayments(
   });
 }
 
-export default function TransactionList({
+function TransactionList({
   publicKey,
   limit = 20,
   compact = false,
@@ -579,4 +580,6 @@ export default function TransactionList({
     </div>
   );
 }
+
+export default withErrorBoundary(TransactionList, "TransactionList");
 
